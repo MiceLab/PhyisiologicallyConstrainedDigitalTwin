@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glycemia VAE explorer</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 1150px; padding: 16px; color: #222; background: #fff; }
+  h2 { margin: 0 0 4px; }
+  p { margin: 0 0 12px; color: #555; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: end; margin-bottom: 12px; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #444; }
+  .radio { flex-direction: row; align-items: center; }
+  input[type=number] { width: 80px; }
+  .z { min-width: 130px; }
+  button { padding: 6px 12px; cursor: pointer; }
+  #play { background: #ff7c00; color: #fff; border: 1px solid #e06c00; }
+  #stop { background: #e53935; color: #fff; border: 1px solid #c62828; }
+  #run { font-size: 13px; color: #666; overflow-wrap: anywhere; }
+  svg { width: 100%; height: auto; font-family: serif; }
+</style>
+</head>
+<body>
+<h2>Glycemia VAE explorer</h2>
+<p>Set the latent with the sliders, take a meal and bolus, and watch the generated blood glucose.
+  Play walks the latent along an OU path (measured phi) and locks the sliders while they track the drift.
+  Runs entirely in your browser.</p>
+
+<div class="row">
+  <label>Dataset <select id="dataset"><option>safe</option><option>t1dexi</option></select></label>
+  <span id="run"></span>
+</div>
+<div class="row">
+  <label>Start time <input id="start" type="time" value="08:00"></label>
+  <label>Play delay (s/step) <input id="delay" type="range" min="0" max="0.3" step="0.01" value="0.03"></label>
+  <label>Overlap (predictions averaged per instant)
+    <select id="overlap"><option>18</option><option>9</option><option>6</option><option>3</option><option>2</option><option>1</option></select></label>
+  <fieldset class="row" style="margin:0">
+    <legend>Latent dynamics</legend>
+    <label class="radio"><input type="radio" name="mode" value="ou" checked> ou (measured phi)</label>
+    <label class="radio"><input type="radio" name="mode" value="frozen"> frozen (phi=1)</label>
+    <label class="radio"><input type="radio" name="mode" value="resample"> resample (phi=0)</label>
+  </fieldset>
+</div>
+<div class="row" id="zs"></div>
+<div class="row">
+  <label>CHO (g) <input id="cho" type="number" value="40" min="0"></label>
+  <label>Bolus (U) <input id="bolus" type="number" value="4" min="0" step="0.5"></label>
+  <button id="take">Take meal and bolus</button>
+  <button id="gen">Generate day</button>
+  <button id="play">Play generation</button>
+  <button id="stop">Stop</button>
+  <button id="reset">Reset</button>
+</div>
+<svg id="plot" viewBox="0 0 1100 700" role="img" aria-label="Generated blood glucose and model inputs"></svg>
+
+<script type="module">
+import { loadRun, newDay, runAll, generate, takeDose, STEPS, STEP_MIN } from './twin.js';
+
+const $ = id => document.getElementById(id);
+const COLOR = { gen: '#FFB703', insulin: '#023047', pi: '#219EBC', cho: '#FB8500', ra: '#F4A261', eugly: '#9E9E9E' };
+const BG_MAX = 400;          // shared y span of both panels: pi/ra are drawn scaled x400
+const runs = {};
+let s, playing = false;
+
+const latent = () => [...$('zs').querySelectorAll('input')].map(i => +i.value);
+const mode = () => document.querySelector('input[name=mode]:checked').value;
+
+async function load(dataset) {
+  runs[dataset] ??= loadRun(await (await fetch(`models/${dataset}.json`)).json());
+  const run = runs[dataset], old = latent();
+  // overlap is capped at `after`: there are only `after` predictions of any instant
+  s = newDay(run, Math.min(+$('overlap').value, run.after), mode());
+  $('run').textContent = `${run.model} · epoch ${run.epoch}`;
+  $('zs').innerHTML = Array.from({ length: run.latentDim }, (_, i) =>
+    `<label class="z">z[${i}] <output>${(old[i] ?? 0).toFixed(2)}</output>
+       <input type="range" min="-4" max="4" step="0.05" value="${old[i] ?? 0}"></label>`).join('');
+  for (const input of $('zs').querySelectorAll('input')) {
+    input.oninput = () => (input.previousElementSibling.value = (+input.value).toFixed(2));
+    input.onchange = regen;
+  }
+  draw();
+}
+
+function regen() {
+  if (playing) return;
+  runAll(s, latent());
+  draw();
+}
+
+function play() {
+  if (playing) return;
+  playing = true;
+  const sliders = [...$('zs').querySelectorAll('input')];
+  sliders.forEach(i => (i.disabled = true));
+  const steps = generate(s, latent());
+  s.t = 0;
+  const tick = () => {
+    const { value: z, done } = playing ? steps.next() : { done: true };
+    if (done) {
+      playing = false;
+      sliders.forEach(i => (i.disabled = false));
+      return;
+    }
+    s.t = s.bg.length;
+    sliders.forEach((input, i) => { input.value = z[i]; input.previousElementSibling.value = z[i].toFixed(2); });
+    draw();
+    setTimeout(tick, +$('delay').value * 1000);
+  };
+  tick();
+}
+
+// ---------------------------------------------------------------- plot
+const L = 60, R = 1080, PANELS = [[40, 320], [370, 650]];
+const x = i => L + (R - L) * i / (STEPS - 1);
+const y = (v, [top, bot]) => bot - (bot - top) * Math.min(Math.max(v, 0), BG_MAX) / BG_MAX;
+const line = (vals, panel, color) =>
+  `<polyline fill="none" stroke="${color}" stroke-width="1.6" points="${Array.from(vals, (v, i) => `${x(i).toFixed(1)},${y(v, panel).toFixed(1)}`).join(' ')}"/>`;
+
+function draw() {
+  const [hh, mm] = ($('start').value || '08:00').split(':').map(Number), start = hh * 60 + mm;
+  const minute = i => (start + STEP_MIN * i) % 1440;
+  const b = s.run.before, pi = s.pi.subarray(b, b + STEPS), ra = s.ra.subarray(b, b + STEPS);
+  let out = `<text x="${(L + R) / 2}" y="24" text-anchor="middle" font-size="15">${s.run.dataset} - ${s.run.model} - epoch ${s.run.epoch}</text>`;
+
+  PANELS.forEach((p, k) => {
+    for (let v = 0; v <= BG_MAX; v += 100)
+      out += `<line x1="${L}" x2="${R}" y1="${y(v, p)}" y2="${y(v, p)}" stroke="#ddd"/>
+              <text x="${L - 6}" y="${y(v, p) + 4}" text-anchor="end" font-size="12">${v}</text>`;
+    for (let i = 0; i < STEPS; i++) if (minute(i) % 120 === 0) {
+      out += `<line x1="${x(i)}" x2="${x(i)}" y1="${p[0]}" y2="${p[1]}" stroke="#ddd"/>`;
+      if (k === 1) out += `<text x="${x(i)}" y="${p[1] + 18}" text-anchor="middle" font-size="12">${String(minute(i) / 60).padStart(2, '0')}:00</text>`;
+    }
+    for (let i = 0; i < STEPS; i++) {
+      if (s.cho[b + i]) out += `<line x1="${x(i)}" x2="${x(i)}" y1="${p[0]}" y2="${p[1]}" stroke="${COLOR.cho}" stroke-dasharray="6 4"/>`;
+      if (s.bolus[b + i]) out += `<line x1="${x(i)}" x2="${x(i)}" y1="${p[0]}" y2="${p[1]}" stroke="${COLOR.insulin}" stroke-dasharray="2 3"/>`;
+    }
+    out += `<rect x="${L}" y="${p[0]}" width="${R - L}" height="${p[1] - p[0]}" fill="none" stroke="#2B2B2B"/>
+            <text transform="translate(16 ${(p[0] + p[1]) / 2}) rotate(-90)" text-anchor="middle" font-size="13">${k ? 'scaled x400' : 'mg/dL'}</text>`;
+  });
+
+  const [p1, p2] = PANELS;
+  out += `<rect x="${L}" y="${y(180, p1)}" width="${R - L}" height="${y(70, p1) - y(180, p1)}" fill="${COLOR.eugly}" opacity="0.25"/>`;
+  if (s.bg.length) out += line(s.bg.map(v => v * BG_MAX), p1, COLOR.gen);
+  out += line(pi.map(v => v * BG_MAX), p2, COLOR.pi) + line(ra.map(v => v * BG_MAX), p2, COLOR.ra);
+  out += legend(p1, [[COLOR.eugly, '70-180 mg/dL'], [COLOR.gen, 'generated BG']]);
+  out += legend(p2, [[COLOR.pi, 'plasma insulin (scaled x400)'], [COLOR.ra, 'glucose Ra (scaled x400)']]);
+  out += `<text x="${(L + R) / 2}" y="695" text-anchor="middle" font-size="13">time of day</text>`;
+  $('plot').innerHTML = out;
+}
+
+const legend = (p, items) => `<rect x="${L + 8}" y="${p[0] + 8}" width="250" height="${items.length * 20 + 8}" fill="#fff" stroke="#B0B0B0"/>` +
+  items.map(([c, t], i) => `<line x1="${L + 16}" x2="${L + 40}" y1="${p[0] + 22 + 20 * i}" y2="${p[0] + 22 + 20 * i}" stroke="${c}" stroke-width="4"/>
+    <text x="${L + 48}" y="${p[0] + 26 + 20 * i}" font-size="13">${t}</text>`).join('');
+
+// ---------------------------------------------------------------- wiring
+$('dataset').onchange = e => { playing = false; load(e.target.value); };
+$('overlap').onchange = e => { s.overlap = Math.min(+e.target.value, s.run.after); regen(); };
+document.querySelectorAll('input[name=mode]').forEach(r => (r.onchange = () => { s.mode = mode(); regen(); }));
+$('start').onchange = () => draw();
+$('take').onclick = () => { takeDose(s, +$('cho').value || 0, +$('bolus').value || 0); playing ? draw() : regen(); };
+$('gen').onclick = regen;
+$('play').onclick = play;
+$('stop').onclick = () => (playing = false);
+$('reset').onclick = () => { playing = false; s = newDay(s.run, s.overlap, s.mode); draw(); };
+load($('dataset').value);
+</script>
+</body>
+</html>
