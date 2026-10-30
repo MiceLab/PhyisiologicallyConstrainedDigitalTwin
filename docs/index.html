@@ -47,7 +47,6 @@
   <label>CHO (g) <input id="cho" type="number" value="40" min="0"></label>
   <label>Bolus (U) <input id="bolus" type="number" value="4" min="0" step="0.5"></label>
   <button id="take">Take meal and bolus</button>
-  <button id="gen">Generate day</button>
   <button id="play">Play generation</button>
   <button id="stop">Stop</button>
   <button id="reset">Reset</button>
@@ -159,7 +158,6 @@ $('overlap').onchange = e => { s.overlap = Math.min(+e.target.value, s.run.after
 document.querySelectorAll('input[name=mode]').forEach(r => (r.onchange = () => { s.mode = mode(); regen(); }));
 $('start').onchange = () => draw();
 $('take').onclick = () => { takeDose(s, +$('cho').value || 0, +$('bolus').value || 0); playing ? draw() : regen(); };
-$('gen').onclick = regen;
 $('play').onclick = play;
 $('stop').onclick = () => (playing = false);
 $('reset').onclick = () => { playing = false; s = newDay(s.run, s.overlap, s.mode); draw(); };
