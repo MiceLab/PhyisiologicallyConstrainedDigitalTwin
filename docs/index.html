@@ -33,8 +33,6 @@
 <div class="row">
   <label>Start time <input id="start" type="time" value="08:00"></label>
   <label>Play delay (s/step) <input id="delay" type="range" min="0" max="0.3" step="0.01" value="0.03"></label>
-  <label>Overlap (predictions averaged per instant)
-    <select id="overlap"><option>18</option><option>9</option><option>6</option><option>3</option><option>2</option><option>1</option></select></label>
   <fieldset class="row" style="margin:0">
     <legend>Latent dynamics</legend>
     <label class="radio"><input type="radio" name="mode" value="ou" checked> ou (measured phi)</label>
@@ -68,8 +66,7 @@ const mode = () => document.querySelector('input[name=mode]:checked').value;
 async function load(dataset) {
   runs[dataset] ??= loadRun(await (await fetch(`models/${dataset}.json`)).json());
   const run = runs[dataset], old = latent();
-  // overlap is capped at `after`: there are only `after` predictions of any instant
-  s = newDay(run, Math.min(+$('overlap').value, run.after), mode());
+  s = newDay(run, run.after, mode());     // full overlap: every instant averages all 18 predictions
   $('run').textContent = `${run.model} · epoch ${run.epoch}`;
   $('zs').innerHTML = Array.from({ length: run.latentDim }, (_, i) =>
     `<label class="z">z[${i}] <output>${(old[i] ?? 0).toFixed(2)}</output>
@@ -154,7 +151,6 @@ const legend = (p, items) => `<rect x="${L + 8}" y="${p[0] + 8}" width="250" hei
 
 // ---------------------------------------------------------------- wiring
 $('dataset').onchange = e => { playing = false; load(e.target.value); };
-$('overlap').onchange = e => { s.overlap = Math.min(+e.target.value, s.run.after); regen(); };
 document.querySelectorAll('input[name=mode]').forEach(r => (r.onchange = () => { s.mode = mode(); regen(); }));
 $('start').onchange = () => draw();
 $('take').onclick = () => { takeDose(s, +$('cho').value || 0, +$('bolus').value || 0); playing ? draw() : regen(); };
