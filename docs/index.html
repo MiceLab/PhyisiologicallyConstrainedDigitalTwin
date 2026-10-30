@@ -93,8 +93,8 @@ function play() {
   playing = true;
   const sliders = [...$('zs').querySelectorAll('input')];
   sliders.forEach(i => (i.disabled = true));
+  s = newDay(s.run, s.overlap, s.mode);     // Play starts a fresh day: earlier doses are dropped
   const steps = generate(s, latent());
-  s.t = 0;
   const tick = () => {
     const { value: z, done } = playing ? steps.next() : { done: true };
     if (done) {
